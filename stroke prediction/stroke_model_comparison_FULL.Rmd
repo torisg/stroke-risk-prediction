@@ -1,0 +1,227 @@
+---
+title: "Stroke Risk Prediction: Decision Tree Model Comparison"
+author: "Tori Green"
+date: "2025-06-17"
+output: html_document
+---
+
+## 📖 Overview
+Stroke is a leading cause of death and disability worldwide. This R Markdown provides all code and explanations for predicting stroke risk using decision tree models. It’s structured for GitHub with clear comments, narrative, and reproducible code.
+
+---
+
+## 🎯 Objective
+- **Goal:** Develop and compare decision tree models for predicting stroke risk.
+- **Key Questions:**
+    - Which health and lifestyle factors most influence stroke?
+    - How do different tree setups affect accuracy and sensitivity?
+
+---
+
+## 📂 Setup
+```{r}
+# Load required libraries
+library(readxl)
+library(dplyr)
+library(caret)
+library(rpart)
+library(rpart.plot)
+library(rattle)
+library(pROC)
+library(corrplot)
+library(ggplot2)
+
+# Read dataset
+stroke <- read_excel("stroke_dataset.xlsx")
+
+# View initial structure
+str(stroke)
+summary(stroke)
+```
+---
+
+## 🔧 Data Preparation
+```{r}
+# Remove unnecessary ID column
+stroke$id <- NULL
+
+# Convert variables to factors where appropriate
+stroke <- stroke %>% mutate(
+  stroke = as.factor(stroke),
+  gender = as.factor(gender),
+  ever_married = as.factor(ever_married),
+  work_type = as.factor(work_type),
+  Residence_type = as.factor(Residence_type),
+  smoking_status = as.factor(smoking_status),
+  hypertension = as.factor(hypertension),
+  heart_disease = as.factor(heart_disease),
+  bmi = as.numeric(bmi)
+)
+
+# Check for missing values
+colSums(is.na(stroke))
+
+# Impute missing BMI values with mean
+stroke$bmi[is.na(stroke$bmi)] <- mean(stroke$bmi, na.rm = TRUE)
+
+# Check class balance
+table(stroke$stroke)
+round(prop.table(table(stroke$stroke)) * 100, 2)
+```
+---
+
+## 📊 Correlation Analysis
+```{r}
+# Convert factors to numeric for correlation heatmap
+stroke_numeric <- stroke %>% mutate(across(where(is.factor), as.numeric))
+cor_matrix <- cor(stroke_numeric, use = "complete.obs")
+
+# Correlation heatmap
+corrplot(cor_matrix, method = "color", type = "upper",
+         tl.col = "black", addCoef.col = "black", number.cex = 0.7)
+```
+**Comment:** Age, glucose level, and hypertension show strongest relationships with stroke.
+---
+
+## 📂 Train/Test Split
+```{r}
+set.seed(123)
+train_index <- sample(nrow(stroke), floor(0.8 * nrow(stroke)))
+train <- stroke[train_index, ]
+test <- stroke[-train_index, ]
+
+# Set training control with upsampling for class imbalance
+ctrl <- trainControl(method = "cv", number = 10, sampling = "up")
+```
+---
+
+## 🌳 Model 1: Full Decision Tree
+```{r}
+set.seed(123)
+tree_model <- train(
+  stroke ~ ., data = train,
+  method = "rpart",
+  trControl = ctrl,
+  tuneGrid = expand.grid(cp = seq(0.005, 0.05, by = 0.005)),
+  control = rpart.control(maxdepth = 4, minsplit = 20, cp = 0.005)
+)
+
+# Variable importance
+var_imp <- varImp(tree_model, scale = FALSE)
+plot(var_imp)
+
+# Extract top variables
+importance <- var_imp$importance
+par(mar = c(14, 4, 4, 2))
+barplot(sort(importance[, 1], decreasing = TRUE),
+        main = "Variable Importance",
+        col = "lightblue",
+        las = 2,
+        names.arg = rownames(importance))
+
+top_vars <- head(importance[order(-importance[,1]), , drop = FALSE], 5)
+top_vars
+```
+---
+
+## 📊 Model 1 Evaluation
+```{r}
+pred_probs <- predict(tree_model, newdata = test, type = "prob")
+pred_class <- predict(tree_model, newdata = test)
+conf_mat <- confusionMatrix(pred_class, test$stroke)
+conf_mat
+
+# ROC and AUC
+roc_obj <- roc(response = test$stroke, predictor = pred_probs[, "1"])
+roc_obj
+```
+---
+
+## 🌳 Model 2: Simplified Tree
+```{r}
+set.seed(123)
+tree_model2 <- train(
+  stroke ~ age + avg_glucose_level + ever_married + hypertension + heart_disease + bmi,
+  data = train,
+  method = "rpart",
+  trControl = ctrl,
+  tuneGrid = expand.grid(cp = seq(0.005, 0.05, by = 0.005)),
+  control = rpart.control(maxdepth = 4, minsplit = 20, cp = 0.005)
+)
+
+# Model 2 evaluation
+pred_probs2 <- predict(tree_model2, newdata = test, type = "prob")
+pred_class2 <- predict(tree_model2, newdata = test)
+conf_mat2 <- confusionMatrix(pred_class2, test$stroke)
+conf_mat2
+roc_obj2 <- roc(response = test$stroke, predictor = pred_probs2[, "1"])
+roc_obj2
+```
+---
+
+## 📈 Model Comparison
+```{r}
+model_summary <- data.frame(
+    Model = c("Decision Tree Model", "Decision Tree Model2"),
+    Kappa = c(0.1918, 0.1726),
+    Accuracy = c(0.7466, 0.7456),
+    Sensitivity = c(0.7412, 0.7443),
+    Specificity = c(0.8393, 0.7679),
+    AUC = c(0.8181, 0.8347)
+)
+model_summary
+```
+**Comment:** Model 2 shows slightly higher AUC but lower specificity.
+---
+
+## 📉 ROC Curve & Final Tree Plot
+```{r}
+plot(roc_obj2, col = "#2C77B2", lwd = 3, main = "ROC Curve - Stroke Prediction")
+legend("bottomright", legend = paste("AUC =", round(auc(roc_obj2), 3)), col = "#2C77B2", lwd = 2)
+
+# Decision tree visualization
+rpart.plot(tree_model2$finalModel,
+           type = 2,
+           extra = 104,
+           fallen.leaves = TRUE,
+           cex = 0.8,
+           box.palette = "GnBu")
+```
+---
+
+## 🩺 Rule Extraction
+```{r}
+# Extract rules
+rules <- asRules(tree_model2$finalModel)
+rules
+
+# Print top risk indicators
+cat("\nTop Risk Indicators:\n",
+    paste("- ", rownames(top_vars), ": Monitor closely.", sep = "", collapse = "\n"))
+```
+---
+
+## 💡 Insights
+- Age, glucose level, and hypertension were top predictors.
+- Model 2 was simpler and slightly improved AUC.
+- Upsampling improved stroke detection.
+
+---
+
+## 🚀 Next Steps
+- Consider ensemble models for better accuracy.
+- Implement SMOTE or cost-sensitive learning.
+- Wrap model into a Shiny app for clinicians.
+
+---
+
+## 🛠 Tools Used
+- caret – Model training & CV
+- rpart & rpart.plot – Decision trees
+- pROC – ROC/AUC
+- corrplot – Correlation heatmap
+- rattle – Rule extraction
+
+---
+
+
